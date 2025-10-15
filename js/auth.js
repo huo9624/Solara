@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // 例如，可以添加多个有效密码
         const validPasswords = [
             DEFAULT_PASSWORD,
-            'qianxiuadmin'
+            '962424'
         ];
         
         return validPasswords.includes(password);
