@@ -1,5 +1,3 @@
-import { Buffer } from 'node:buffer';  // 静态导入，修复动态 require 错误
-
 const encoder = new TextEncoder();
 
 function timingSafeEqual(a, b) {
@@ -11,15 +9,22 @@ function timingSafeEqual(a, b) {
 
 export const onRequest = async (context) => {
   const { request, env } = context;
-  const BASIC_USER = "admin";  // 用户名
-  const BASIC_PASS = env.PASSWORD || "fallback";  // 从环境变量获取密码
-  console.log("PASSWORD loaded:", !!BASIC_PASS ? "Yes" : "No");  // 调试日志
+  const BASIC_USER = "admin";
+  const BASIC_PASS = env.PASSWORD || "fallback";  // 环境变量密码
+  console.log("PASSWORD loaded:", !!BASIC_PASS ? "Yes" : "No");
 
   const authorization = request.headers.get("Authorization");
   if (!authorization) {
-    return new Response("需要登录。", {
+    return new Response(`
+      <html><head><title>需要登录</title></head><body>
+        <h1>访问受保护页面</h1><p>请在浏览器弹出框输入用户名和密码。</p>
+      </body></html>
+    `, {
       status: 401,
-      headers: { "WWW-Authenticate": 'Basic realm="站点", charset="UTF-8"' }
+      headers: {
+        "WWW-Authenticate": 'Basic realm="Sola站点", charset="UTF-8"',
+        "Content-Type": "text/html"
+      }
     });
   }
 
@@ -28,17 +33,27 @@ export const onRequest = async (context) => {
     return new Response("无效授权。", { status: 400 });
   }
 
-  const credentials = Buffer.from(encoded, "base64").toString("ascii");
+  // 用原生 atob 解码（无需 Buffer）
+  const credentials = atob(encoded);
   const index = credentials.indexOf(":");
   const user = credentials.substring(0, index);
   const pass = credentials.substring(index + 1);
 
   if (!timingSafeEqual(BASIC_USER, user) || !timingSafeEqual(BASIC_PASS, pass)) {
-    return new Response("密码错误。", {
+    return new Response(`
+      <html><head><title>登录失败</title></head><body>
+        <h1>用户名或密码错误</h1><p>请重试。</p>
+      </body></html>
+    `, {
       status: 401,
-      headers: { "WWW-Authenticate": 'Basic realm="站点", charset="UTF-8"' }
+      headers: { "WWW-Authenticate": 'Basic realm="Sola站点", charset="UTF-8"' }
     });
   }
 
-  return fetch(request);  // 验证通过，放行
+  // 验证通过，返回自定义成功页（或 fetch）
+  return new Response(`
+    <html><head><title>成功</title></head><body>
+      <h1>欢迎！</h1><p>密码验证通过。这是受保护的内容。</p>
+    </body></html>
+  `, { status: 200 });
 };
