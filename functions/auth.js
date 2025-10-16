@@ -10,14 +10,17 @@ function timingSafeEqual(a, b) {
 export const onRequest = async (context) => {
   const { request, env } = context;
   const BASIC_USER = "admin";
-  const BASIC_PASS = env.PASSWORD || "fallback";  // 环境变量密码
+  const BASIC_PASS = env.PASSWORD || "fallback";  // 替换为你的密码
   console.log("PASSWORD loaded:", !!BASIC_PASS ? "Yes" : "No");
 
+  // 强制检查所有请求（保护 /auth）
   const authorization = request.headers.get("Authorization");
   if (!authorization) {
     return new Response(`
       <html><head><title>需要登录</title></head><body>
-        <h1>访问受保护页面</h1><p>请在浏览器弹出框输入用户名和密码。</p>
+        <h1>访问受保护的 /auth 页面</h1>
+        <p>浏览器应弹出登录框。用户名: admin，密码: [你的密码]</p>
+        <p>如果无弹出，检查浏览器设置。</p>
       </body></html>
     `, {
       status: 401,
@@ -30,11 +33,10 @@ export const onRequest = async (context) => {
 
   const [scheme, encoded] = authorization.split(" ");
   if (!encoded || scheme !== "Basic") {
-    return new Response("无效授权。", { status: 400 });
+    return new Response("无效授权格式。", { status: 400 });
   }
 
-  // 用原生 atob 解码（无需 Buffer）
-  const credentials = atob(encoded);
+  const credentials = atob(encoded);  // 原生 Base64 解码
   const index = credentials.indexOf(":");
   const user = credentials.substring(0, index);
   const pass = credentials.substring(index + 1);
@@ -42,7 +44,8 @@ export const onRequest = async (context) => {
   if (!timingSafeEqual(BASIC_USER, user) || !timingSafeEqual(BASIC_PASS, pass)) {
     return new Response(`
       <html><head><title>登录失败</title></head><body>
-        <h1>用户名或密码错误</h1><p>请重试。</p>
+        <h1>用户名或密码错误</h1>
+        <p>请重试。用户名: admin</p>
       </body></html>
     `, {
       status: 401,
@@ -50,10 +53,12 @@ export const onRequest = async (context) => {
     });
   }
 
-  // 验证通过，返回自定义成功页（或 fetch）
+  // 成功：返回保护内容
   return new Response(`
     <html><head><title>成功</title></head><body>
-      <h1>欢迎！</h1><p>密码验证通过。这是受保护的内容。</p>
+      <h1>欢迎访问 /auth！</h1>
+      <p>密码验证通过。这是受保护的内容。</p>
+      <p>你可以在这里添加更多页面。</p>
     </body></html>
   `, { status: 200 });
 };
