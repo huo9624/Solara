@@ -29,6 +29,42 @@ body.mobile-view {
     --mobile-ring-vertical-shift: calc((env(safe-area-inset-top, 0px) * 0.5) - 24px);
 }
 
+body.mobile-view .auth-overlay {
+    padding: 24px 18px;
+}
+
+body.mobile-view .auth-panel {
+    background: rgba(12, 14, 20, 0.95);
+    color: #f3f4f9;
+    box-shadow: 0 40px 90px rgba(0, 0, 0, 0.6);
+}
+
+body.mobile-view .auth-description {
+    color: rgba(226, 232, 240, 0.75);
+}
+
+body.mobile-view .auth-input {
+    background: rgba(21, 24, 31, 0.9);
+    border-color: rgba(148, 163, 184, 0.32);
+    color: #f8fafc;
+}
+
+body.mobile-view .auth-input:focus {
+    box-shadow: 0 0 0 3px rgba(26, 188, 156, 0.32);
+}
+
+body.mobile-view .auth-input::placeholder {
+    color: rgba(148, 163, 184, 0.68);
+}
+
+body.mobile-view .auth-submit {
+    box-shadow: 0 16px 44px rgba(26, 188, 156, 0.38);
+}
+
+body.mobile-view .auth-logo {
+    box-shadow: 0 26px 52px rgba(26, 188, 156, 0.5);
+}
+
 body.mobile-view .background-stage {
     display: none;
 }
@@ -150,6 +186,26 @@ body.mobile-view .mobile-toolbar__button:hover {
     background: rgba(255, 255, 255, 0.12);
     color: #ffffff;
     border-color: rgba(255, 255, 255, 0.28);
+}
+
+body.mobile-view .mobile-toolbar__button--logout {
+    border-color: rgba(255, 120, 120, 0.45);
+    color: rgba(255, 160, 160, 0.9);
+}
+
+body.mobile-view .mobile-toolbar__button--logout:hover,
+body.mobile-view .mobile-toolbar__button--logout:focus-visible {
+    border-color: rgba(255, 120, 120, 0.7);
+    background: rgba(255, 120, 120, 0.25);
+    color: #ffffff;
+}
+
+body.mobile-view .mobile-toolbar__button--logout[hidden] {
+    display: none !important;
+}
+
+body.mobile-view .mobile-toolbar__button--logout i {
+    font-size: 1rem;
 }
 
 body.mobile-view .main-content {

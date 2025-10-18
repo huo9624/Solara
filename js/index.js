@@ -50,6 +50,14 @@ const dom = {
     mobilePanelTitle: document.getElementById("mobilePanelTitle"),
     mobileQueueToggle: document.getElementById("mobileQueueToggle"),
     searchArea: document.getElementById("searchArea"),
+    authOverlay: document.getElementById("authOverlay"),
+    authForm: document.getElementById("authForm"),
+    authPasswordInput: document.getElementById("authPassword"),
+    authSubmitButton: document.getElementById("authSubmitButton"),
+    authError: document.getElementById("authError"),
+    authDescription: document.getElementById("authDescription"),
+    logoutButton: document.getElementById("logoutButton"),
+    mobileLogoutButton: document.getElementById("mobileLogoutButton"),
 };
 
 window.SolaraDom = dom;
@@ -309,6 +317,14 @@ function safeSetLocalStorage(key, value) {
     }
 }
 
+function safeRemoveLocalStorage(key) {
+    try {
+        localStorage.removeItem(key);
+    } catch (error) {
+        console.warn(`删除本地存储失败: ${key}`, error);
+    }
+}
+
 function parseJSON(value, fallback) {
     if (!value) return fallback;
     try {
@@ -349,6 +365,316 @@ function persistPaletteCache() {
         console.warn("保存调色板缓存失败", error);
     }
 }
+
+const AUTH_STORAGE_KEY = "solara.auth.token";
+const AUTH_BODY_LOCK_CLASS = "auth-locked";
+const AUTH_API_ENDPOINT = "/auth";
+const AUTH_DEFAULT_DESCRIPTION = "请输入访问密码以继续使用 Solara 音乐播放器。";
+const AUTH_LOGOUT_DESCRIPTION = "您已退出登录，请输入访问密码重新进入。";
+const AUTH_EXPIRED_DESCRIPTION = "登录状态已失效，请重新输入访问密码。";
+const AUTH_VERIFYING_DESCRIPTION = "正在验证已保存的访问凭证...";
+
+let authInitialized = false;
+
+function getStoredAuthToken() {
+    const token = safeGetLocalStorage(AUTH_STORAGE_KEY);
+    return typeof token === "string" && token ? token : null;
+}
+
+function storeAuthToken(token) {
+    safeSetLocalStorage(AUTH_STORAGE_KEY, token);
+}
+
+function clearStoredAuthToken() {
+    safeRemoveLocalStorage(AUTH_STORAGE_KEY);
+}
+
+function updateLogoutVisibility(isAuthorized) {
+    const logoutButtons = [dom.logoutButton, dom.mobileLogoutButton];
+    logoutButtons.forEach(button => {
+        if (!button) {
+            return;
+        }
+        button.hidden = !isAuthorized;
+        button.setAttribute("aria-hidden", isAuthorized ? "false" : "true");
+    });
+}
+
+function setAuthDescription(message) {
+    if (dom.authDescription && typeof message === "string") {
+        dom.authDescription.textContent = message;
+    }
+}
+
+function clearAuthError() {
+    if (!dom.authError) {
+        return;
+    }
+    dom.authError.textContent = "";
+    dom.authError.classList.remove("visible");
+}
+
+function showAuthError(message) {
+    if (!dom.authError) {
+        return;
+    }
+    dom.authError.textContent = message;
+    dom.authError.classList.add("visible");
+}
+
+function applyAuthState(isAuthorized) {
+    if (!document.body) {
+        return;
+    }
+    document.body.classList.toggle(AUTH_BODY_LOCK_CLASS, !isAuthorized);
+    if (dom.authOverlay) {
+        dom.authOverlay.hidden = Boolean(isAuthorized);
+        dom.authOverlay.setAttribute("aria-hidden", isAuthorized ? "true" : "false");
+    }
+    if (dom.container) {
+        if (isAuthorized) {
+            dom.container.removeAttribute("aria-hidden");
+            dom.container.removeAttribute("inert");
+        } else {
+            dom.container.setAttribute("aria-hidden", "true");
+            dom.container.setAttribute("inert", "");
+        }
+    }
+    updateLogoutVisibility(Boolean(isAuthorized));
+    if (isAuthorized) {
+        setAuthDescription(AUTH_DEFAULT_DESCRIPTION);
+        clearAuthError();
+    }
+}
+
+function setAuthFormLoading(isLoading) {
+    const loading = Boolean(isLoading);
+    if (dom.authSubmitButton) {
+        const defaultText = dom.authSubmitButton.dataset.defaultText || dom.authSubmitButton.textContent || "进入";
+        dom.authSubmitButton.dataset.defaultText = defaultText;
+        dom.authSubmitButton.textContent = loading ? "验证中..." : defaultText;
+        dom.authSubmitButton.disabled = loading;
+    }
+    if (dom.authPasswordInput) {
+        dom.authPasswordInput.disabled = loading;
+    }
+}
+
+function focusAuthPasswordInput() {
+    if (!dom.authPasswordInput) {
+        return;
+    }
+    window.setTimeout(() => {
+        if (!document.body || !document.body.classList.contains(AUTH_BODY_LOCK_CLASS)) {
+            return;
+        }
+        try {
+            dom.authPasswordInput.focus({ preventScroll: true });
+        } catch (error) {
+            dom.authPasswordInput.focus();
+        }
+    }, 120);
+}
+
+function extractAuthErrorDetails(error) {
+    if (!error || typeof error !== "object") {
+        return {
+            message: "验证失败，请稍后重试",
+            remainingAttempts: null,
+            retryAfter: null,
+            status: null,
+            errorCode: null,
+        };
+    }
+    const info = typeof error.details === "object" && error.details ? error.details : {};
+    const status = typeof error.status === "number" ? error.status : null;
+    const errorCode = typeof info.error === "string" ? info.error : null;
+    const messageSource = typeof info.message === "string" && info.message.trim()
+        ? info.message.trim()
+        : (error instanceof Error && typeof error.message === "string" && error.message.trim()
+            ? error.message.trim()
+            : "验证失败，请稍后重试");
+    const remainingAttemptsValue = typeof info.remainingAttempts === "number" ? info.remainingAttempts : null;
+    const retryAfterValue = typeof info.retryAfter === "number" ? info.retryAfter : null;
+
+    return {
+        message: messageSource,
+        remainingAttempts: Number.isFinite(remainingAttemptsValue) ? Number(remainingAttemptsValue) : null,
+        retryAfter: Number.isFinite(retryAfterValue) ? Number(retryAfterValue) : null,
+        status,
+        errorCode,
+    };
+}
+
+async function sendAuthRequest(payload) {
+    const response = await fetch(AUTH_API_ENDPOINT, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+    });
+
+    const text = await response.text();
+    let data = null;
+    if (text) {
+        try {
+            data = JSON.parse(text);
+        } catch (error) {
+            data = { message: text };
+        }
+    }
+
+    if (!response.ok) {
+        const message = data && typeof data === "object" && typeof data.message === "string" && data.message.trim()
+            ? data.message
+            : `验证失败 (${response.status})`;
+        const authError = new Error(message);
+        authError.status = response.status;
+        if (data && typeof data === "object") {
+            authError.details = data;
+        }
+        throw authError;
+    }
+
+    return data && typeof data === "object" ? data : {};
+}
+
+async function handleAuthSubmit(event) {
+    event.preventDefault();
+    if (!dom.authPasswordInput) {
+        return;
+    }
+    const password = dom.authPasswordInput.value || "";
+    if (!password.trim()) {
+        showAuthError("请输入访问密码");
+        focusAuthPasswordInput();
+        return;
+    }
+    setAuthFormLoading(true);
+    clearAuthError();
+
+    try {
+        const result = await sendAuthRequest({ password });
+        if (result && typeof result.token === "string") {
+            storeAuthToken(result.token);
+        }
+        applyAuthState(true);
+        dom.authPasswordInput.value = "";
+        showNotification("验证成功，欢迎回来", "success");
+    } catch (error) {
+        const details = extractAuthErrorDetails(error);
+        let message = details.message || "验证失败，请稍后重试";
+        if (details.errorCode === "TOO_MANY_ATTEMPTS" && Number.isFinite(details.retryAfter)) {
+            const waitSeconds = Math.max(1, Math.ceil(Number(details.retryAfter)));
+            message = `尝试次数过多，请在 ${waitSeconds} 秒后再试`;
+        } else if (Number.isFinite(details.remainingAttempts) && details.remainingAttempts >= 0) {
+            message = `${message} (剩余尝试次数：${details.remainingAttempts})`;
+        }
+        showAuthError(message);
+        setAuthDescription(AUTH_DEFAULT_DESCRIPTION);
+        dom.authPasswordInput.value = "";
+        focusAuthPasswordInput();
+    } finally {
+        setAuthFormLoading(false);
+    }
+}
+
+function handleLogout(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    clearStoredAuthToken();
+    setAuthFormLoading(false);
+    setAuthDescription(AUTH_LOGOUT_DESCRIPTION);
+    clearAuthError();
+    if (dom.authPasswordInput) {
+        dom.authPasswordInput.value = "";
+    }
+    applyAuthState(false);
+    if (typeof closeAllMobileOverlays === "function") {
+        try {
+            closeAllMobileOverlays();
+        } catch (error) {
+            console.warn("退出登录时关闭移动端遮罩失败", error);
+        }
+    }
+    try {
+        if (dom.audioPlayer) {
+            dom.audioPlayer.pause();
+        }
+    } catch (error) {
+        console.warn("退出登录时暂停播放器失败", error);
+    }
+    showNotification("已退出登录", "success");
+    focusAuthPasswordInput();
+}
+
+async function initializeAuth() {
+    if (authInitialized) {
+        return;
+    }
+    authInitialized = true;
+
+    if (dom.authSubmitButton && !dom.authSubmitButton.dataset.defaultText) {
+        dom.authSubmitButton.dataset.defaultText = dom.authSubmitButton.textContent || "进入";
+    }
+
+    if (dom.authForm) {
+        dom.authForm.addEventListener("submit", handleAuthSubmit);
+    }
+    if (dom.logoutButton) {
+        dom.logoutButton.addEventListener("click", handleLogout);
+    }
+    if (dom.mobileLogoutButton) {
+        dom.mobileLogoutButton.addEventListener("click", handleLogout);
+    }
+    if (dom.authPasswordInput) {
+        dom.authPasswordInput.addEventListener("input", () => {
+            if (dom.authError && dom.authError.classList.contains("visible")) {
+                clearAuthError();
+            }
+        });
+    }
+
+    const storedToken = getStoredAuthToken();
+    if (storedToken) {
+        setAuthDescription(AUTH_VERIFYING_DESCRIPTION);
+        try {
+            setAuthFormLoading(true);
+            const result = await sendAuthRequest({ token: storedToken });
+            if (result && typeof result.token === "string") {
+                storeAuthToken(result.token);
+            }
+            applyAuthState(true);
+            return;
+        } catch (error) {
+            console.warn("已保存的访问凭证验证失败:", error);
+            clearStoredAuthToken();
+            const details = extractAuthErrorDetails(error);
+            setAuthDescription(AUTH_EXPIRED_DESCRIPTION);
+            showAuthError(details.message || AUTH_EXPIRED_DESCRIPTION);
+        } finally {
+            setAuthFormLoading(false);
+        }
+    } else {
+        setAuthDescription(AUTH_DEFAULT_DESCRIPTION);
+        clearAuthError();
+    }
+
+    applyAuthState(false);
+    if (dom.authPasswordInput) {
+        dom.authPasswordInput.value = "";
+    }
+    focusAuthPasswordInput();
+}
+
+initializeAuth().catch(error => {
+    console.error("初始化访问控制失败:", error);
+    applyAuthState(false);
+    focusAuthPasswordInput();
+});
 
 function preferHttpsUrl(url) {
     if (!url || typeof url !== "string") return url;
