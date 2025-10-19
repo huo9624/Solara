@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solara 自检</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png">
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px; font: 14px/1.6 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Noto Sans',PingFang SC,Helvetica,Arial,'Apple Color Emoji','Segoe UI Emoji';
+      background: #0b1220; color: #e6edf3;
+    }
+    .card { max-width: 880px; margin: 0 auto; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 20px; }
+    h1 { margin: 0 0 4px; font-size: 22px; }
+    .sub { color: #9aa4b2; font-size: 13px; margin-bottom: 16px; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
+    input, select { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: inherit; padding: 8px 10px; border-radius: 8px; outline: none; }
+    input:focus, select:focus { border-color: #3b82f6; }
+    button { appearance: none; border: 0; border-radius: 10px; padding: 10px 14px; background: #3b82f6; color: #fff; cursor: pointer; font-weight: 600; }
+    button[disabled] { opacity: .6; cursor: not-allowed; }
+
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 12px 0; }
+    .tile { border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); border-radius: 12px; padding: 14px; min-height: 96px; display: flex; flex-direction: column; }
+    .tile h3 { margin: 0 0 6px; font-size: 15px; font-weight: 700; }
+    .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: #6b7280; }
+    .ok .dot { background: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,0.25); }
+    .fail .dot { background: #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,0.25); }
+    .ms { color: #9aa4b2; font-size: 12px; margin-left: 8px; }
+    .err { color: #fca5a5; font-size: 12px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
+
+    .meta { margin-top: 10px; color: #9aa4b2; font-size: 12px; }
+    .pre { margin-top: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px; overflow: auto; max-height: 300px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; }
+    .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .spacer { flex: 1; }
+    .copy { background: transparent; color: #93c5fd; border: 1px dashed rgba(147,197,253,0.3); }
+
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Solara 自检</h1>
+    <div class="sub">一键检测后端代理与第三方接口可用性。默认测试音源为「网易云」，关键词为「love」。</div>
+
+    <div class="controls">
+      <label class="row">音源
+        <select id="source">
+          <option value="netease">网易云</option>
+          <option value="kuwo">酷我</option>
+          <option value="joox">JOOX</option>
+        </select>
+      </label>
+      <label class="row">关键词
+        <input id="keyword" placeholder="love" />
+      </label>
+      <label class="row">音质
+        <select id="quality">
+          <option value="128">128</option>
+          <option value="192">192</option>
+          <option value="320" selected>320</option>
+          <option value="999">FLAC</option>
+        </select>
+      </label>
+      <span class="spacer"></span>
+      <button id="run">开始检测</button>
+    </div>
+
+    <div class="grid">
+      <div class="tile" id="tile-search">
+        <h3>搜索</h3>
+        <div class="status"><span class="dot"></span><span class="label">待检测</span><span class="ms"></span></div>
+        <div class="err"></div>
+      </div>
+      <div class="tile" id="tile-track">
+        <h3>歌词/详情</h3>
+        <div class="status"><span class="dot"></span><span class="label">待检测</span><span class="ms"></span></div>
+        <div class="err"></div>
+      </div>
+      <div class="tile" id="tile-stream">
+        <h3>音频地址</h3>
+        <div class="status"><span class="dot"></span><span class="label">待检测</span><span class="ms"></span></div>
+        <div class="err"></div>
+      </div>
+    </div>
+
+    <div class="row meta">
+      <div>总耗时：<span id="total">-</span> ms</div>
+      <div class="spacer"></div>
+      <button id="copy" class="copy">复制结果</button>
+    </div>
+
+    <pre class="pre" id="output">点击「开始检测」以运行自检...</pre>
+  </div>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const byId = (id) => document.getElementById(id);
+
+    function formatMs(value) {
+      if (!Number.isFinite(value)) return '';
+      return `(${Math.max(0, Math.round(value))} ms)`;
+    }
+
+    function setTile(id, ok, ms, error) {
+      const el = byId(`tile-${id}`);
+      const status = el.querySelector('.status');
+      const label = status.querySelector('.label');
+      const dot = status.querySelector('.dot');
+      const msEl = status.querySelector('.ms');
+      const errEl = el.querySelector('.err');
+
+      errEl.textContent = error ? String(error) : '';
+      msEl.textContent = formatMs(ms);
+
+      if (ok) {
+        status.classList.remove('fail');
+        status.classList.add('ok');
+        label.textContent = 'OK';
+      } else {
+        status.classList.remove('ok');
+        status.classList.add('fail');
+        label.textContent = '失败';
+      }
+    }
+
+    async function run() {
+      const btn = byId('run');
+      btn.disabled = true;
+      setTile('search', false, 0, '');
+      setTile('track', false, 0, '');
+      setTile('stream', false, 0, '');
+      byId('total').textContent = '-';
+
+      const source = byId('source').value || 'netease';
+      const keyword = (byId('keyword').value || 'love').trim();
+      const quality = byId('quality').value || '320';
+      const params = new URLSearchParams({ source, keyword, quality });
+
+      let payload = null;
+      try {
+        const resp = await fetch(`/api/selftest?${params.toString()}`);
+        const text = await resp.text();
+        payload = text ? JSON.parse(text) : null;
+      } catch (e) {
+        payload = { ok: false, steps: {}, error: String(e && e.message || e) };
+      }
+
+      try {
+        const s = payload && payload.steps || {};
+        setTile('search', !!(s.search && s.search.ok), s.search && s.search.ms, s.search && s.search.error);
+        setTile('track', !!(s.track && s.track.ok), s.track && s.track.ms, s.track && s.track.error);
+        setTile('stream', !!(s.stream && s.stream.ok), s.stream && s.stream.ms, s.stream && s.stream.error);
+        byId('total').textContent = String(payload && payload.ms || 0);
+        byId('output').textContent = JSON.stringify(payload, null, 2);
+      } catch (e) {
+        byId('output').textContent = '解析响应失败: ' + (e && e.message || e);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    byId('run').addEventListener('click', run);
+    byId('copy').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(byId('output').textContent || '');
+      } catch {}
+    });
+  </script>
+</body>
+</html>
