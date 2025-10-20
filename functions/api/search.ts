@@ -15,7 +15,8 @@ function pickSearchTtl(): number {
   return SEARCH_CACHE_TTL_MIN + Math.floor(Math.random() * (SEARCH_CACHE_TTL_MAX - SEARCH_CACHE_TTL_MIN));
 }
 
-function parseProvidersParam(raw: string | null | undefined): ProviderId[] {
+function parseProvidersParam(providersRaw: string | null | undefined, sourceRaw?: string | null, providerRaw?: string | null): ProviderId[] {
+  const raw = (providersRaw ?? sourceRaw ?? providerRaw ?? "");
   const list = (raw || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
   const allowed: ProviderId[] = ["gd", "kuwo", "jamendo", "ia"];
   const selected = list.length ? list.filter((p): p is ProviderId => (allowed as string[]).includes(p)) : allowed;
@@ -55,7 +56,11 @@ export async function onRequest({ request, env }: { request: Request; env: Env }
   }
   const page = Math.max(1, Math.min(1000, Number(url.searchParams.get("page")) || 1));
   const pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, Number(url.searchParams.get("pageSize")) || DEFAULT_PAGE_SIZE));
-  const providersParam = parseProvidersParam(url.searchParams.get("providers"));
+  const providersParam = parseProvidersParam(
+    url.searchParams.get("providers"),
+    url.searchParams.get("source"),
+    url.searchParams.get("provider")
+  );
 
   const kvKey = `search:${providersParam.join("+")}:${page}:${pageSize}:${query.toLowerCase()}`;
 
