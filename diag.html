@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Solara 诊断</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; margin: 0; padding: 24px; line-height: 1.6; }
+    .card { max-width: 720px; margin: 0 auto; border: 1px solid rgba(0,0,0,.1); border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    .muted { color: #6b7280; font-size: 14px; }
+    .status { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; font-weight: 600; }
+    .ok { background: #e6f4ea; color: #166534; }
+    .fail { background: #fee2e2; color: #991b1b; }
+    pre { background: rgba(0,0,0,.04); padding: 12px; border-radius: 8px; overflow: auto; }
+    .grid { display: grid; grid-template-columns: 140px 1fr; gap: 12px 16px; align-items: center; }
+    .row { display: contents; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Solara 自检</h1>
+    <p class="muted">此页面用于验证 Cloudflare Pages 路由与 Functions 是否正常工作。</p>
+
+    <div id="result" class="grid" aria-live="polite">
+      <div class="row"><div>状态</div><div id="status"><span class="status" aria-busy="true">检测中...</span></div></div>
+      <div class="row"><div>耗时</div><div id="elapsed">-</div></div>
+      <div class="row"><div>响应</div><div><pre id="payload">(等待响应)</pre></div></div>
+      <div class="row"><div>接口</div><div><code id="endpoint"></code></div></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const endpoint = "/api/selftest";
+      document.getElementById("endpoint").textContent = endpoint;
+
+      function setStatus(ok, elapsed, payload) {
+        const statusEl = document.getElementById("status");
+        const elapsedEl = document.getElementById("elapsed");
+        const payloadEl = document.getElementById("payload");
+        statusEl.innerHTML = ok
+          ? '<span class="status ok" role="status" aria-live="polite">OK</span>'
+          : '<span class="status fail" role="status" aria-live="polite">FAIL</span>';
+        elapsedEl.textContent = Number.isFinite(elapsed) ? (elapsed + ' ms') : '-';
+        try {
+          payloadEl.textContent = JSON.stringify(payload, null, 2);
+        } catch (e) {
+          payloadEl.textContent = String(payload);
+        }
+      }
+
+      const start = Date.now();
+      fetch(endpoint, { cache: "no-store" })
+        .then(async (res) => {
+          const text = await res.text();
+          let data = null;
+          try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+          const ok = res.ok && data && typeof data === "object" && data.ok === true;
+          const elapsed = (data && typeof data.elapsed === "number") ? data.elapsed : (Date.now() - start);
+          setStatus(ok, elapsed, data);
+        })
+        .catch((err) => {
+          setStatus(false, Date.now() - start, { error: String(err && err.message || err) });
+        });
+    })();
+  </script>
+</body>
+</html>
