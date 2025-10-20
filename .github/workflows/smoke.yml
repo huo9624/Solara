@@ -1,0 +1,201 @@
+name: Cloud API Smoke Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"  # hourly; adjust as needed
+
+jobs:
+  smoke:
+    name: Smoke Test (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [preview, production]
+    environment: ${{ matrix.target }}
+    env:
+      # Expect an environment-scoped secret named BASE_URL for each environment (preview/production)
+      BASE_URL: ${{ secrets.BASE_URL }}
+      SMOKE_QUERY: love
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run smoke checks (selftest + search → track → stream)
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          SMOKE_QUERY: ${{ env.SMOKE_QUERY }}
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: |
+          if [ -z "${BASE_URL}" ]; then
+            echo "::error::Missing BASE_URL secret (scoped to environment '${{ matrix.target }}'). Please add BASE_URL in GitHub Environments."
+            exit 1
+          fi
+
+          node - <<'NODE'
+          const { performance } = require('perf_hooks');
+
+          const BASE = (process.env.BASE_URL || '').replace(/\/+$/, '');
+          const QUERY = process.env.SMOKE_QUERY || 'love';
+
+          const HEADERS_TO_LOG = [
+            'date','server','cf-ray','cf-cache-status','x-cache','x-served-by','via','content-type','content-length','accept-ranges','content-range','etag','last-modified','server-timing'
+          ];
+
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+          async function fetchWithTimeout(url, { timeoutMs = 8000, retries = 2, init = {} } = {}) {
+            let lastErr;
+            for (let attempt = 0; attempt <= retries; attempt++) {
+              const controller = new AbortController();
+              const id = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
+              const started = performance.now();
+              try {
+                const res = await fetch(url, { ...init, signal: controller.signal });
+                const elapsedMs = Math.round(performance.now() - started);
+                clearTimeout(id);
+                if (!res.ok && res.status >= 500 && attempt < retries) {
+                  lastErr = new Error(`HTTP ${res.status}`);
+                  await sleep(250 * (attempt + 1));
+                  continue;
+                }
+                return { res, elapsedMs };
+              } catch (err) {
+                clearTimeout(id);
+                lastErr = err;
+                if (attempt < retries) {
+                  await sleep(250 * (attempt + 1));
+                  continue;
+                }
+                throw lastErr;
+              }
+            }
+            throw lastErr || new Error('unknown error');
+          }
+
+          function pickDuration(obj) {
+            if (!obj || typeof obj !== 'object') return undefined;
+            for (const k of ['elapsed','elapsedMs','duration','durationMs','ms','time','timeMs']) {
+              const v = obj[k];
+              if (typeof v === 'number' && isFinite(v)) return Math.round(v);
+            }
+            return undefined;
+          }
+
+          function logHeaderGroup(title, headers) {
+            console.log(`::group::${title}`);
+            for (const k of HEADERS_TO_LOG) {
+              const v = headers.get(k);
+              if (v) console.log(`${k}: ${v}`);
+            }
+            console.log('::endgroup::');
+          }
+
+          (async () => {
+            const summary = [];
+            const results = { selftest: {}, search: {}, track: {}, stream: {} };
+
+            try {
+              // 1) selftest
+              const { res: stRes, elapsedMs: stMs } = await fetchWithTimeout(`${BASE}/api/selftest`, { timeoutMs: 5000, retries: 1, init: { headers: { 'Accept': 'application/json' } } });
+              const stBodyText = await stRes.text();
+              let stJson = null; try { stJson = JSON.parse(stBodyText); } catch {}
+              const stOk = stRes.ok && stJson && stJson.ok === true;
+              results.selftest = { ok: stOk, status: stRes.status, elapsed: stMs };
+              summary.push(`selftest: ${stOk ? 'OK' : 'FAIL'} (${stMs} ms, http ${stRes.status})`);
+
+              // 2) search
+              const searchUrl = `${BASE}/api/search?q=${encodeURIComponent(QUERY)}&pageSize=6`;
+              const { res: seRes, elapsedMs: seMs } = await fetchWithTimeout(searchUrl, { timeoutMs: 7000, retries: 2, init: { headers: { 'Accept': 'application/json' } } });
+              const seJson = await seRes.json().catch(() => null);
+              const items = seJson && Array.isArray(seJson.items) ? seJson.items : [];
+              const count = items.length;
+              const preferred = ['gd','kuwo','jamendo','ia'];
+              let chosen = null;
+              for (const p of preferred) {
+                chosen = items.find(t => t && t.provider === p && (t.isPlayable !== false));
+                if (chosen) break;
+              }
+              const seOk = seRes.ok && count > 0 && Boolean(chosen);
+              results.search = { ok: seOk, status: seRes.status, elapsed: seMs, count, provider: chosen?.provider, id: chosen?.id };
+              summary.push(`search: ${seOk ? 'OK' : 'FAIL'} (${seMs} ms, http ${seRes.status}, items=${count}, picked=${chosen ? chosen.provider : 'none'})`);
+
+              if (!seOk) throw new Error('Search failed/no playable item');
+
+              // 3) track
+              const trackUrl = `${BASE}/api/track?provider=${encodeURIComponent(chosen.provider)}&id=${encodeURIComponent(chosen.id)}`;
+              const { res: trRes, elapsedMs: trMs } = await fetchWithTimeout(trackUrl, { timeoutMs: 6000, retries: 2, init: { headers: { 'Accept': 'application/json' } } });
+              const trJson = await trRes.json().catch(() => null);
+              const trackOk = trRes.ok && trJson && trJson.track && trJson.track.id;
+              results.track = { ok: Boolean(trackOk), status: trRes.status, elapsed: trMs, provider: trJson?.provider };
+              summary.push(`track: ${trackOk ? 'OK' : 'FAIL'} (${trMs} ms, http ${trRes.status}, provider=${trJson?.provider || 'n/a'})`);
+              if (!trackOk) throw new Error('Track failed');
+
+              // 4) stream (do not read body)
+              const streamUrl = `${BASE}/api/stream?provider=${encodeURIComponent(chosen.provider)}&id=${encodeURIComponent(chosen.id)}&q=320`;
+              const { res: st2Res, elapsedMs: st2Ms } = await fetchWithTimeout(streamUrl, { timeoutMs: 8000, retries: 2, init: { method: 'GET', headers: { 'Accept': '*/*' } } });
+              const streamOk = (st2Res.status === 200 || st2Res.status === 206);
+              results.stream = { ok: streamOk, status: st2Res.status, elapsed: st2Ms };
+              summary.push(`stream: ${streamOk ? 'OK' : 'FAIL'} (${st2Ms} ms, http ${st2Res.status})`);
+
+              // Log response headers for visibility
+              logHeaderGroup('Stream response headers', st2Res.headers);
+
+              // Render step summary
+              const lines = [];
+              lines.push(`# Solara Cloud API Smoke Test (${process.env.MATRIX_TARGET || ''})`);
+              lines.push('');
+              lines.push(`- selftest: ${results.selftest.ok ? '✅' : '❌'} ${results.selftest.elapsed} ms (http ${results.selftest.status})`);
+              lines.push(`- search: ${results.search.ok ? '✅' : '❌'} ${results.search.elapsed} ms (http ${results.search.status}, items=${results.search.count}, picked=${results.search.provider || 'none'})`);
+              lines.push(`- track: ${results.track.ok ? '✅' : '❌'} ${results.track.elapsed} ms (http ${results.track.status}, provider=${results.track.provider || 'n/a'})`);
+              lines.push(`- stream: ${results.stream.ok ? '✅' : '❌'} ${results.stream.elapsed} ms (http ${results.stream.status})`);
+
+              const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+              if (summaryFile) {
+                require('fs').appendFileSync(summaryFile, lines.join('\n') + '\n');
+              }
+
+              if (!results.selftest.ok || !results.search.ok || !results.track.ok || !results.stream.ok) {
+                console.error('::error::One or more smoke checks failed');
+                process.exit(2);
+              }
+
+              console.log('All smoke checks passed');
+            } catch (e) {
+              console.error('::error::Smoke test failed');
+              if (e && e.stack) console.error(String(e.stack).split('\n').slice(0, 10).join('\n'));
+              else if (e && e.message) console.error(e.message);
+              else console.error(String(e));
+              // Also write failure summary
+              const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+              if (summaryFile) {
+                const failLines = [];
+                failLines.push(`# Solara Cloud API Smoke Test - FAILED`);
+                for (const s of Object.keys(results)) {
+                  const it = results[s];
+                  if (!it) continue;
+                  failLines.push(`- ${s}: ${it.ok ? '✅' : '❌'} ${it.elapsed ?? 'n/a'} ms (http ${it.status ?? 'n/a'})`);
+                }
+                require('fs').appendFileSync(summaryFile, failLines.join('\n') + '\n');
+              }
+              process.exit(1);
+            }
+          })();
+          NODE
+
+      - name: Slack notify on failure (optional)
+        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          msg="Solara Smoke Test FAILED (${{ matrix.target }}) for ${GITHUB_REPOSITORY}\n${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          esc_msg=$(printf '%s' "$msg" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          payload="{\"text\": $(echo $esc_msg)}"
+          curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL" || echo 'Slack notification failed (ignored)'
