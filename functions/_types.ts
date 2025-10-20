@@ -35,6 +35,8 @@ export interface KVNamespace {
 export interface Env {
   JAMENDO_CLIENT_ID: string;
   MUSIC_CACHE: KVNamespace;
+  // Optional name for Audius app identifier if Audius provider is enabled
+  AUDIUS_APP_NAME?: string;
 }
 
 export interface SearchParams {
